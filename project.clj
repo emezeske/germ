@@ -5,7 +5,7 @@
     {:name "Eclipse Public License"
      :url "http://www.eclipse.org/legal/epl-v10.html"}
   :plugins
-    [[lein-tarsier "0.9.2"]]
+    [[lein-tarsier "0.9.4-SNAPSHOT"]]
   :vimclojure-opts
     {:repl true}
   :dependencies
