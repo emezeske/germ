@@ -8,8 +8,7 @@
       [core :as quil]]))
 
 (def ^:private window-size [500 500])
-(def ^:private window-center (mapv #(/ % 2) window-size))
-(def ^:private gravity [0.0 1500.0])
+(def ^:private gravity [0.0 1200.0])
 (def ^:private framerate 75)
 (def ^:private air-friction 7.0)
 
@@ -24,19 +23,21 @@
    radial-k
    linear-k])
 
+(defrecord+ Derivatives [acceleration velocity])
+
 ; TODO: Experiment with making the edge low mass and actually
 ;       simulating a high-mass core. This seems MUCH better.
 
 ; TODO: It seems like the angle springs are not necessary.
 
-(defn- make-points [n]
-  (for [i (range n)]
-    (let [theta (* (/ i n) 2.0 Math/PI)
+(defn- make-foam-ball [point-count center]
+  (for [i (range point-count)]
+    (let [theta (* (/ i point-count) 2.0 Math/PI)
           radius 100
           position [(Math/cos theta) (Math/sin theta)]
           position (mapv #(* % radius) position)
-          position (mapv + position window-center)
-          neighbor-angle (/ (* 2.0 Math/PI ) n)
+          position (mapv + position center)
+          neighbor-angle (/ (* 2.0 Math/PI ) point-count)
           rest-angle (- Math/PI neighbor-angle)
           rest-distance (* 1.0 radius (Math/sin neighbor-angle))]
       (make-germ-skin-point
@@ -48,11 +49,11 @@
          :rest-angle rest-angle
          :rest-radius radius
          :rest-distance rest-distance
-         :tortional-k 60.0
-         :radial-k 60.0
-         :linear-k 60.0}))))
+         :tortional-k 10.0
+         :radial-k 20.0
+         :linear-k 20.0}))))
 
-(def ^:private points (atom (make-points 11)))
+(def ^:private points (atom (make-foam-ball 11 [250 110])))
 
 (defn- dot-product [a b]
   (apply + (mapv * a b)))
@@ -117,7 +118,7 @@
   (spring-force point centroid rest-radius radial-k))
 
 (defn- resolve-force [point left right centroid]
-  (reduce (partial map +)
+  (reduce (partial mapv +)
     ((juxt
       resolve-gravity
       (partial resolve-tortional-spring left right)
@@ -177,25 +178,58 @@
     (collide 1 > 500)))
 
 ; FIXME: For debug:
-(pprint @points)
+;(pprint @points)
+
+(defn- integrate-force [point left right centroid dt]
+  (let [force (resolve-force point left right centroid)
+        force (mapv + force (resolve-air-friction point force))
+        acceleration (resolve-acceleration point force)
+        velocity (resolve-velocity point acceleration dt)]
+    (Derivatives. acceleration velocity)))
+
+(defn- integrate-forces [points dt]
+  (let [centroid (get-centroid points)
+        npoints (count points)]
+    (for [i (range npoints)]
+      (let [before (mod (dec i) npoints)
+            after (mod (inc i) npoints)]
+        (integrate-force (nth points i) (nth points before) (nth points after) centroid dt)))))
+
+(defn- integrate-velocity [point velocity dt]
+  (let [position (resolve-position point velocity dt)]
+    (-> point
+      (assoc-in [:physics :velocity] velocity)
+      (assoc-in [:physics :position] position))))
+
+(defn- integrate-velocities [points derivatives dt]
+  (for [[point derivative] (mapv vector points derivatives)]
+    (integrate-velocity point (:velocity derivative) dt)))
+
+(defn- rk4-weight [derivatives property]
+  (let [[d0 d1 d2 d3] (mapv property derivatives)]
+    (mapv #(* % (/ 1.0 6.0))
+      (mapv +
+        d0
+        (mapv #(* % 2.0)
+          (mapv + d1 d2))
+        d3))))
+
+(defn- rk4-weights [ds0 ds1 ds2 ds3]
+  (for [derivatives (mapv vector ds0 ds1 ds2 ds3)]
+    (Derivatives.
+      (rk4-weight derivatives :acceleration)
+      (rk4-weight derivatives :velocity))))
 
 (defn- simulate-points [dt points]
-  (let [points-wrapped (concat [(last points)] points [(first points)])
-        point-groups (partition 3 1 points-wrapped)
-        centroid (get-centroid points)
-        ; FIXME Testing
-        ;centroid (mapv + centroid [0.0 (* dt 1000.0)])
-        ]
-    (for [[left point right] point-groups]
-      (let [force (resolve-force point left right centroid)
-            force (map + force (resolve-air-friction point force))
-            acceleration (resolve-acceleration point force)
-            velocity (resolve-velocity point acceleration dt)
-            position (resolve-position point velocity dt)]
-        (-> point
-          (assoc-in [:physics :velocity] velocity)
-          (assoc-in [:physics :position] position)
-          (resolve-collisions))))))
+  (let [[h0 h1 h2 h3] (mapv #(* % dt) [0.0 0.5 0.5 1.0])
+        ds0 (integrate-forces points h0)
+        ds1 (integrate-forces (integrate-velocities points ds0 h1) h1)
+        ds2 (integrate-forces (integrate-velocities points ds1 h2) h2)
+        ds3 (integrate-forces (integrate-velocities points ds2 h3) h3)
+        ds-rk4 (rk4-weights ds0 ds1 ds2 ds3)
+        integrated (integrate-velocities points ds-rk4 dt)]
+    (for [point integrated]
+      (resolve-collisions point))))
 
 (defn- draw []
   (quil/background 180)
@@ -212,7 +246,7 @@
   (quil/end-shape)
   (swap! points
     (fn [points]
-      (let [steps 10]
+      (let [steps 3]
         (nth
           (iterate
             (partial simulate-points (/ 1.0 framerate steps))

@@ -16,7 +16,7 @@
         nils (repeat (count fields) nil)]
     `(do
        (defrecord ~record-name ~fields ~@args)
-       (defn- ~make [init#]
+       (defn ~make [init#]
          (merge
            (new ~record-name ~@nils)
            init#)))))
