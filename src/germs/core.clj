@@ -25,12 +25,23 @@
 
 (defrecord+ Derivatives [acceleration velocity])
 
+; (defprotocol ISimulated
+;   (calculate-derivatives [self dt])
+;   (integrate-euler [self derivatives dt])
+;   (resolve-collisions [self]))
+
+; (defrecord+ Germ [points]
+;   ISimulated
+;   (calculate-derivatives [self dt] nil)
+;   (integrate-euler [self derivatives dt] nil)
+;   (resolve-collisions [self] nil))
+
 ; TODO: Experiment with making the edge low mass and actually
 ;       simulating a high-mass core. This seems MUCH better.
 
 ; TODO: It seems like the angle springs are not necessary.
 
-(defn- make-foam-ball [point-count center]
+(defn- make-germ [point-count center]
   (for [i (range point-count)]
     (let [theta (* (/ i point-count) 2.0 Math/PI)
           radius 100
@@ -53,7 +64,7 @@
          :radial-k 20.0
          :linear-k 20.0}))))
 
-(def ^:private points (atom (make-foam-ball 11 [250 110])))
+(def ^:private points (atom (make-germ 11 [250 110])))
 
 (defn- dot-product [a b]
   (apply + (mapv * a b)))
@@ -173,37 +184,35 @@
 (defn- resolve-collisions [point]
   (-> point
     (collide 0 < 0)
-    (collide 0 > 500)
+    (collide 0 > (first window-size))
     (collide 1 < 0)
-    (collide 1 > 500)))
+    (collide 1 > (second window-size))))
 
 ; FIXME: For debug:
 ;(pprint @points)
 
-(defn- integrate-force [point left right centroid dt]
+(defn- calculate-derivative [point left right centroid dt]
   (let [force (resolve-force point left right centroid)
         force (mapv + force (resolve-air-friction point force))
         acceleration (resolve-acceleration point force)
         velocity (resolve-velocity point acceleration dt)]
     (Derivatives. acceleration velocity)))
 
-(defn- integrate-forces [points dt]
+(defn- calculate-derivatives [points dt]
   (let [centroid (get-centroid points)
         npoints (count points)]
     (for [i (range npoints)]
       (let [before (mod (dec i) npoints)
             after (mod (inc i) npoints)]
-        (integrate-force (nth points i) (nth points before) (nth points after) centroid dt)))))
+        (calculate-derivative
+          (nth points i) (nth points before) (nth points after) centroid dt)))))
 
-(defn- integrate-velocity [point velocity dt]
-  (let [position (resolve-position point velocity dt)]
-    (-> point
-      (assoc-in [:physics :velocity] velocity)
-      (assoc-in [:physics :position] position))))
-
-(defn- integrate-velocities [points derivatives dt]
-  (for [[point derivative] (mapv vector points derivatives)]
-    (integrate-velocity point (:velocity derivative) dt)))
+(defn- integrate-euler [points velocities dt]
+  (for [[point velocity] (mapv vector points velocities)]
+    (let [position (resolve-position point velocity dt)]
+      (-> point
+        (assoc-in [:physics :velocity] velocity)
+        (assoc-in [:physics :position] position)))))
 
 (defn- rk4-weight [derivatives property]
   (let [[d0 d1 d2 d3] (mapv property derivatives)]
@@ -222,12 +231,13 @@
 
 (defn- simulate-points [dt points]
   (let [[h0 h1 h2 h3] (mapv #(* % dt) [0.0 0.5 0.5 1.0])
-        ds0 (integrate-forces points h0)
-        ds1 (integrate-forces (integrate-velocities points ds0 h1) h1)
-        ds2 (integrate-forces (integrate-velocities points ds1 h2) h2)
-        ds3 (integrate-forces (integrate-velocities points ds2 h3) h3)
+        integrator (fn [ds h] (integrate-euler points (map :velocity ds) h))
+        ds0 (calculate-derivatives points h0)
+        ds1 (calculate-derivatives (integrator ds0 h1) h1)
+        ds2 (calculate-derivatives (integrator ds1 h2) h2)
+        ds3 (calculate-derivatives (integrator ds2 h3) h3)
         ds-rk4 (rk4-weights ds0 ds1 ds2 ds3)
-        integrated (integrate-velocities points ds-rk4 dt)]
+        integrated (integrator ds-rk4 dt)]
     (for [point integrated]
       (resolve-collisions point))))
 
@@ -238,11 +248,10 @@
   ;(doseq [{{[x y] :position} :physics} @points]
   ;  (quil/ellipse x y 10 10))
   (quil/begin-shape)
-  (let [head [(last @points)]
-        tail [(first @points) (second @points)]
-        points-with-ends (concat head @points tail)]
-    (doseq [{{p :position} :physics} points-with-ends]
-      (apply quil/curve-vertex p)))
+  (let [npoints (count @points)
+        indices (concat [(dec npoints)] (range 0 npoints) [0 1])]
+    (doseq [i indices]
+      (apply quil/curve-vertex (:position (:physics (nth @points i))))))
   (quil/end-shape)
   (swap! points
     (fn [points]
